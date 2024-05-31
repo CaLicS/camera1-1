@@ -1,0 +1,57 @@
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/compressed_image.hpp"
+#include "cv_bridge/cv_bridge.h"
+#include "opencv2/opencv.hpp"
+#include <memory>
+#include <chrono>
+
+std::string src = "nvarguscamerasrc sensor-id=0 ! \
+video/x-raw(memory:NVMM), width=(int)640, height=(int)360, \
+format=(string)NV12 ! nvvidconv flip-method=0 ! video/x-raw, \
+width=(int)640, height=(int)360, format=(string)BGRx ! \
+videoconvert ! video/x-raw, format=(string)BGR ! appsink"; 
+
+int main(int argc, char * argv[])
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<rclcpp::Node>("campub");
+    auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort();
+    auto mypub = node->create_publisher<sensor_msgs::msg::CompressedImage>("image/compressed", qos_profile );
+    auto graypub = node->create_publisher<sensor_msgs::msg::CompressedImage>("image/gray", qos_profile);
+    auto binarypub = node->create_publisher<sensor_msgs::msg::CompressedImage>("image/binary", qos_profile);
+    
+    std_msgs::msg::Header hdr;
+    sensor_msgs::msg::CompressedImage::SharedPtr msg, graymsg, binarymsg;
+    rclcpp::WallRate loop_rate(40.0);
+
+    cv::VideoCapture cap(src, cv::CAP_GSTREAMER);
+    if (!cap.isOpened()) {
+        RCLCPP_ERROR(node->get_logger(), "Could not open video!");
+        rclcpp::shutdown();
+        return -1;
+    }
+    cv::Mat frame;
+
+    while(rclcpp::ok())
+    {
+        cap >> frame;
+        if (frame.empty()) { RCLCPP_ERROR(node->get_logger(), "frame empty"); break;}
+        msg = cv_bridge::CvImage(hdr, "bgr8", frame).toCompressedImageMsg();
+        mypub->publish(*msg);
+
+        cv::Mat grayframe;
+        cv::cvtColor(frame, grayframe, cv::COLOR_BGR2GRAY);
+        graymsg = cv_bridge::CvImage(hdr, "mono8", grayframe).toCompressedImageMsg();
+        graypub->publish(*graymsg);
+
+        cv::Mat binaryframe;
+        cv::threshold(grayframe, binaryframe, 128, 255, cv::THRESH_BINARY);
+        binarymsg = cv_bridge::CvImage(hdr, "mono8", binaryframe).toCompressedImageMsg();
+        binarypub->publish(*binarymsg);
+
+
+        loop_rate.sleep();
+    }
+    rclcpp::shutdown();
+    return 0;
+}
